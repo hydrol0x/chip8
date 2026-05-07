@@ -45,7 +45,7 @@ typedef struct {
     uint16_t I; // memory pointer register
     Stack    stack;
     byte     memory[0xFFF+1]; // 4096 memory locations
-    bool     disp[DISP_WIDTH][DISP_HEIGHT];
+    bool     disp[DISP_HEIGHT][DISP_WIDTH];
     byte     dtimer;  // delay timer
     byte     stimer;  // sound timer that beeps as long as it is greater than 0
     byte     reg[16]; 
@@ -55,16 +55,16 @@ Chip_state chip = {0};
 void print_display() {
     for (int i=0; i<DISP_HEIGHT; i++){
         for (int j=0; j<DISP_WIDTH; j++){
-            printf("%s", chip.disp[j][i] ? "##" : "  ");
+            printf("%s", chip.disp[i][j] ? "##" : "  ");
         }
         printf("\n");
     }
 }
 
 void disp_test_pattern() {
-    for (int i=0; i<DISP_WIDTH; i++){
-        for (int j=0; j<DISP_HEIGHT; j++){
-            chip.disp[i][j] = i%2==0 ? true : false;
+    for (int i=0; i<DISP_HEIGHT ; i++){
+        for (int j=0; j<DISP_WIDTH; j++){
+            chip.disp[i][j] = j%2==0 ? true : false;
         }
     }
 }
@@ -101,6 +101,12 @@ op_t fetch_instruction() {
 
 void clear_disp() {
     memset(chip.disp, 0, sizeof(chip.disp));
+}
+
+void display(byte x_coord, byte y_coord, size_t n) {
+    for (int off=0; off<n; off++) {
+        chip.disp[y_coord+off][x_coord] ^= chip.memory[chip.I+off];
+    }
 }
 
 void decode(op_t op) {
@@ -146,6 +152,8 @@ void decode(op_t op) {
             }
             byte x_coord = chip.reg[x];
             byte y_coord = chip.reg[y];
+            chip.reg[0xF-1] = 0; // set register F (index F-1) to 0
+            display(x_coord%DISP_WIDTH, y_coord%DISP_HEIGHT, n);
             break;
     }
 }
@@ -167,7 +175,7 @@ int main () {
         exit(EXIT_FAILURE);
     }
     fread(&chip.memory[0x200], 1, sizeof(chip.memory)-0x200, fp); //  load data from 0x200 which is standard
-    run();
+    //run();
     disp_test_pattern();
     print_display();
     fclose(fp);
