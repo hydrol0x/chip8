@@ -4,7 +4,7 @@ C_FILES = $(wildcard *.c)
 OBJS    = $(patsubst %.c,%.o,$(C_FILES))
 CFLAGS  = -g -Wall -Werror -pedantic-errors
 LDFLAGS =
-LDLIBS  = -lncurses
+LDLIBS  = -lncursesw
 
 .PHONY: all clean
 all: $(TARGET)

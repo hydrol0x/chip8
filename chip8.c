@@ -8,7 +8,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
+#include <time.h>
+
 #include <ncurses.h>
+#include <locale.h>
 
 #define STACK_SIZE 16
 #define DISP_WIDTH 64
@@ -46,7 +49,7 @@ int stack_pop(Stack *stack, uint16_t *value) {
 }
 
 typedef struct {
-    size_t  pc; // program counter
+    uint16_t pc; // program counter
     uint16_t I; // memory pointer register
     Stack    stack;
     byte     memory[0xFFF+1]; // 4096 memory locations
@@ -57,25 +60,32 @@ typedef struct {
 } Chip_state;
 Chip_state chip = {0};
 
+bool error = false;
+
 void ncurses_display_dsp() {
-    for (int y=0; y<DISP_HEIGHT; y++){
-        for (int x=0; x<DISP_WIDTH; x++){
-            mvprintw(y,x,"%s", chip.disp[y][x] ? "#" : " ");
+    for (int y=0; y<DISP_HEIGHT; y+=1){
+        for (int x=0; x<DISP_WIDTH; x+=1){
+            //mvprintw(y,x,"%s", chip.disp[y][x] ? "" : " ");
+            move(y,x);
+            if (chip.disp[y][x]) { addstr("█"); }
+            else { addstr(" "); }
         }
     }
 }
 
 void ncurses_display_mem() {
     mvprintw(DISP_HEIGHT+2, 0, "memory: [");
-    for (int i=0; i<25; i++) {
-        printw("%04x, ", chip.memory[chip.pc+1+i]);
+    for (int i=0; i<20; i+=2) {
+        uint16_t instruction = (chip.memory[chip.pc + i] << 8) | chip.memory[chip.pc + i + 1];
+        printw("%04x,", instruction);
     }
     printw("]");
 }
 
 void ncurses_display_pc() {
     move(DISP_HEIGHT+3, 0); clrtoeol();
-    mvprintw(DISP_HEIGHT+3, 0, "pc: %lu\t instruction: %04x", chip.pc, chip.memory[chip.pc]);
+    uint16_t instruction = (chip.memory[chip.pc] << 8) | chip.memory[chip.pc + 1];
+    mvprintw(DISP_HEIGHT+3, 0, "pc: %hu\t instruction: %04x", chip.pc, instruction);
 }
 
 void set_test_pattern() {
@@ -91,6 +101,7 @@ void load_font_set() {
 }
 
 void init_chip() {
+    srand(time(NULL));
     load_font_set();
     stack_init(&chip.stack);
     chip.pc = 0x200;
@@ -109,12 +120,12 @@ op_t fetch_instruction() {
     return (byte_a << 8) | byte_b;
 }
 
-#define first(op)  (op>>12)& 0xF
-#define second(op) (op>>8) & 0xF
-#define third(op)  (op>>4) & 0xF
-#define fourth(op) op      & 0xF
-#define NNN(op) op & 0xFFF // last 3 nibbles
-#define NN(op) op & 0xFF   // last 2 nibbles (second byte)
+#define first(op)  ((op>>12)& 0xF)
+#define second(op) ((op>>8) & 0xF)
+#define third(op)  ((op>>4) & 0xF)
+#define fourth(op) (op      & 0xF)
+#define NNN(op) (op & 0xFFF) // last 3 nibbles
+#define NN(op) (op & 0xFF)   // last 2 nibbles (second byte)
 
 void clear_disp() {
     memset(chip.disp, 0, sizeof(chip.disp));
@@ -137,7 +148,27 @@ void display(byte x_coord, byte y_coord, size_t n) {
     }
 }
 
-void decode(op_t op) {
+bool key_press(byte key_value) {
+    TODO("Key press Not implemented");
+}
+
+byte get_key_press() {
+    TODO("Get Key Press Not implemented");
+}
+
+typedef enum {
+    SUCCESS=1,
+    STACK_UNDERFLOW,
+    DRAW_OOB_MEM,
+    DRAW_OOB_REG,
+    ILLEGAL_INS,
+} DecodeErr;
+
+DecodeErr decode(op_t op) {
+    byte x = second(op); // note each of these is actually a nibble not a byte
+    byte y = third(op);
+    byte vx = chip.reg[x];
+    byte vy = chip.reg[y];
     switch (first(op)) {
         case 0x0:
             switch (NNN(op)) {
@@ -145,56 +176,204 @@ void decode(op_t op) {
                     NC_DBG("Clearing screen");
                     clear_disp();
                     break;
-                case (0x0EE): // RET
-                    TODO( "return"); 
+                case (0x0EE):; // RET
+                    if (stack_pop(&chip.stack, &chip.pc) < 0) { return STACK_UNDERFLOW; };
                     break;
                 default: // SYS addr -- effectively NOP for our emulator
-                    return;  
+                    return SUCCESS;  
             }
             break;
         case 0x1: // JMP
             NC_DBG("Jump");
             chip.pc = NNN(op);  // jump to NNN, i.e set the program counter to the address
             break; 
+        case 0x2:
+            NC_DBG("Call");
+            stack_push(&chip.stack, chip.pc);
+            chip.pc = NNN(op);
+            break;
+        case 0x3:
+            NC_DBG("Skip Eq");
+            if (vx == NN(op)) { chip.pc += 2; }
+            break;
+        case 0x4:
+            NC_DBG("Skip Neq");
+            if (vx != NN(op)) { chip.pc += 2; }
+            break;
+        case 0x5:
+            NC_DBG("Skip Neq");
+            if (vx == vy) { chip.pc += 2; }
+            break;
         case 0x6: // LD (load register)
             // our instruction is 0x6Xkk, where we load KK into the Xth register
             NC_DBG("Load");
-            chip.reg[second(op)] = NN(op);
+            chip.reg[x] = NN(op);
             break;  
         case 0x7: // ADD
             // 0x7Xkk, add the value `kk` to register X
-            NC_DBG("Add");
-            chip.reg[second(op)] += NN(op);
+            NC_DBG("Add to Vx");
+            chip.reg[x] += NN(op);
+            break;
+        case 0x8:;
+            switch (fourth(op)) {
+                case 0:
+                    NC_DBG("SET Vx=Vy");
+                    chip.reg[x]=vy;
+                    break;
+                case 1:
+                    NC_DBG("OR");
+                    chip.reg[x] |= vy;
+                    break;
+                case 2:
+                    NC_DBG("AND");
+                    chip.reg[x] &= vy;
+                    break;
+                case 3:
+                    NC_DBG("XOR");
+                    chip.reg[x] ^= vy;
+                    break;
+                case 4:;
+                    NC_DBG("Sum");
+                    uint sum = vx+vy;
+                    if (sum > 255) { chip.reg[0xF] = 1; } // set carry if exceed byte size 
+                    else {chip.reg[0xf] = 0;}
+
+                    chip.reg[x] = sum; // note this will be truncated
+                    break;
+                case 5: 
+                    NC_DBG("Subtract Vx-Vy");
+                    uint sub = vx-vy;
+                    if (vx >= vy) { chip.reg[0xF] = 1; } // set borrow bit, i.e we *didn't* borror b/c vx was greater
+                    else { chip.reg[0xf] = 0; }
+
+                    chip.reg[x] = sub;
+                    break;
+                case 6:
+                    NC_DBG("Shift Right");
+                    if (vx & 0x80) { chip.reg[0xf] = 1; } // MSB is 1
+                    else { chip.reg[0xf] = 0; } 
+                    chip.reg[x] >>= 1;
+                    break;
+                case 7:
+                    NC_DBG("Subtract Vy-Vx");
+                    sub = vy-vx;
+                    if (vy >= vx) { chip.reg[0xF] = 1; } 
+                    else { chip.reg[0xf] = 0; }
+                    chip.reg[x] = sub;
+                    break;
+                case 0xE:
+                    NC_DBG("Shift Left");
+                    if (vx & 0x80) { chip.reg[0xf] = 1; } // MSB is 1
+                    else { chip.reg[0xf] = 0; } 
+                    chip.reg[x] <<= 1;
+                    break;
+            }
+            break;
+        case 0x9:
+            NC_DBG("Skip Vx!=Vy");
+            if (vx != vy) { chip.pc += 2; }
             break;
         case 0xA: // LD I -- load NNN into I register
             NC_DBG("Load I");
             chip.I = NNN(op);
             break;
+        case 0xB:
+            NC_DBG("Jump with offset");
+            chip.pc = NNN(op)+chip.reg[0];
+            break;
+        case 0xC:
+            NC_DBG("Rand");
+            int r = rand(); 
+            chip.reg[x] = r & NN(op); // r is int but it should be truncated ..
+            break;
         case 0xD: ;// DRW Vx, Vy, n -- display sprite at mem loc I -- I+n in (V_x,V_y)
             // 0xDxyn
             NC_DBG("Draw");
-            size_t x = second(op);
-            size_t y = third(op);
             if (x>=sizeof(chip.reg) || y>=sizeof(chip.reg)) { 
-                printf("Fatal error, out of bounds register access in draw instruction\n");
-                exit(EXIT_FAILURE);
+                return DRAW_OOB_REG;
             }
-            size_t n = fourth(op);
+            byte n = fourth(op);
             if (chip.I+n > sizeof(chip.memory)) {
-                printf("Fatal error, out of bounds memory access in draw instruction\n");
-                exit(EXIT_FAILURE);
+                return DRAW_OOB_MEM;
             }
-            byte x_coord = chip.reg[x];
-            byte y_coord = chip.reg[y];
+            byte x_coord = vx;
+            byte y_coord = vy;
             chip.reg[0xF] = 0; // set register F (index F-1) to 0
             display(x_coord%DISP_WIDTH, y_coord%DISP_HEIGHT, n);
             break;
+        case 0xE:
+            switch(NN(op)) {
+                case 0x9E:
+                    NC_DBG("KEY PRESS");
+                    if (key_press(vx)) { chip.pc+=2; };
+                    break;
+                case 0xA1:
+                    NC_DBG("KEY NOT PRESS");
+                    if (!key_press(vx)) { chip.pc+=2; };
+                    break;
+            }
+            break;
+        case 0xF:
+            switch (NN(op)) {
+                case 0x07:
+                    NC_DBG("Set Vx to dtimer");
+                    chip.reg[x]=chip.dtimer;
+                    break;
+                case 0x0A:
+                    NC_DBG("Wait for keypress");
+                    chip.reg[x] = get_key_press();
+                    break;
+                case 0x15:
+                    NC_DBG("Set dtimer to Vx");
+                    chip.dtimer = vx;
+                    break;
+                case 0x18:
+                    NC_DBG("Set stimer to Vx");
+                    chip.stimer = vx;
+                    break;
+                case 0x1E:
+                    NC_DBG("Set I += Vx");
+                    chip.I += vx;
+                    break;
+                case 0x29:
+                    NC_DBG("Load sprite for number");
+                    TODO("Load Sprite # Not implemented");
+                    break;
+                case 0x33:
+                    NC_DBG("Load BCD rep");
+                    TODO("Load BCD rep Not implemented");
+                    break;
+                case 0x55:
+                    NC_DBG("Store reg 0-Vx in Mem[I]-Mem[I+x]");
+                    for (int i=0; i<=x; i++){
+                        chip.memory[chip.I + i] = chip.reg[i];
+                    }
+                    chip.I += x + 1;
+                    break;
+                case 0x65:
+                    NC_DBG("Fill reg 0-Vx with values from Mem[I]-Mem[I+x]");
+                    for (int i=0; i<=x; i++){
+                        chip.reg[i] = chip.memory[chip.I+i];
+                    }
+                    chip.I += x + 1;
+                    break;
+
+            }
+            break;
+        default:
+            return ILLEGAL_INS;
     }
+    return SUCCESS;
 }
 
 
 void run() {
+    setlocale(LC_ALL, "");
+
+    cbreak();
+    noecho();
     initscr();
+
     while (1) {
         
         ncurses_display_dsp();
@@ -205,8 +384,11 @@ void run() {
         mvprintw(DISP_HEIGHT,0,"decoding: %04x", op);
         decode(op);
 
-        sleep(1);
-//        while (getch()!='n') {}
+        usleep(200);
+        //while (getch()!='n') {}
+
+        chip.dtimer--;
+        chip.stimer--;
 
         refresh();
         move(DISP_HEIGHT+1, 0); clrtoeol(); // clear the debug message
@@ -217,9 +399,9 @@ int main () {
     init_chip();
 
     FILE *fp;
-    fp = fopen("ibmlogo.ch8", "rb");
+    fp = fopen("trip.ch8", "rb");
     if (!fp) {
-        perror("Failed to open data file");
+        perror("Chip 8 Error: Failed to open data file");
         exit(EXIT_FAILURE);
     }
     fread(&chip.memory[0x200], 1, sizeof(chip.memory)-0x200, fp); //  load data from 0x200 which is standard
