@@ -1,15 +1,20 @@
 // Chip-8 Emulator
 
+#include <curses.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
 #include <assert.h>
+#include <ncurses.h>
 
 #define STACK_SIZE 16
 #define DISP_WIDTH 64
 #define DISP_HEIGHT 32
+
+#define NC_DBG(text) mvprintw(DISP_HEIGHT+1,0,"Debug: " #text);
 
 #define TODO(text) assert(!"TODO: " #text)
 
@@ -52,19 +57,31 @@ typedef struct {
 } Chip_state;
 Chip_state chip = {0};
 
-void print_display() {
-    for (int i=0; i<DISP_HEIGHT; i++){
-        for (int j=0; j<DISP_WIDTH; j++){
-            printf("%s", chip.disp[i][j] ? "##" : "  ");
+void ncurses_display_dsp() {
+    for (int y=0; y<DISP_HEIGHT; y++){
+        for (int x=0; x<DISP_WIDTH; x++){
+            mvprintw(y,x,"%s", chip.disp[y][x] ? "#" : " ");
         }
-        printf("\n");
     }
 }
 
-void disp_test_pattern() {
-    for (int i=0; i<DISP_HEIGHT ; i++){
-        for (int j=0; j<DISP_WIDTH; j++){
-            chip.disp[i][j] = j%2==0 ? true : false;
+void ncurses_display_mem() {
+    mvprintw(DISP_HEIGHT+2, 0, "memory: [");
+    for (int i=0; i<25; i++) {
+        printw("%04x, ", chip.memory[chip.pc+1+i]);
+    }
+    printw("]");
+}
+
+void ncurses_display_pc() {
+    move(DISP_HEIGHT+3, 0); clrtoeol();
+    mvprintw(DISP_HEIGHT+3, 0, "pc: %lu\t instruction: %04x", chip.pc, chip.memory[chip.pc]);
+}
+
+void set_test_pattern() {
+    for (int y=0; y<DISP_HEIGHT ; y++){
+        for (int x=0; x<DISP_WIDTH; x++){
+            chip.disp[y][x] = x%2==0 ? true : false;
         }
     }
 }
@@ -104,8 +121,19 @@ void clear_disp() {
 }
 
 void display(byte x_coord, byte y_coord, size_t n) {
-    for (int off=0; off<n; off++) {
-        chip.disp[y_coord+off][x_coord] ^= chip.memory[chip.I+off];
+    for (int y_off=0; y_off<n; y_off++) {
+        byte sprite_slice = chip.memory[chip.I + y_off];
+        for (int x_off = 0; x_off < 8; x_off++ ){
+            int current_bit = (sprite_slice>>(7-x_off)) & 0x1;
+            int dsp_bit     = chip.disp[y_coord+y_off][x_coord+x_off];
+
+            if (!current_bit) { continue; } // 0 bit doesn't change anything 
+
+            if (dsp_bit) { // 1 ^ 1 = 0 , so this dsp bit turns off hence set flag
+                chip.reg[0xF] = 1;
+            }
+            chip.disp[y_coord+y_off][x_coord+x_off]^=current_bit;
+        } 
     }
 }
 
@@ -114,6 +142,7 @@ void decode(op_t op) {
         case 0x0:
             switch (NNN(op)) {
                 case (0x0E0): // CLS
+                    NC_DBG("Clearing screen");
                     clear_disp();
                     break;
                 case (0x0EE): // RET
@@ -124,21 +153,26 @@ void decode(op_t op) {
             }
             break;
         case 0x1: // JMP
+            NC_DBG("Jump");
             chip.pc = NNN(op);  // jump to NNN, i.e set the program counter to the address
             break; 
         case 0x6: // LD (load register)
             // our instruction is 0x6Xkk, where we load KK into the Xth register
+            NC_DBG("Load");
             chip.reg[second(op)] = NN(op);
             break;  
         case 0x7: // ADD
             // 0x7Xkk, add the value `kk` to register X
+            NC_DBG("Add");
             chip.reg[second(op)] += NN(op);
             break;
         case 0xA: // LD I -- load NNN into I register
+            NC_DBG("Load I");
             chip.I = NNN(op);
             break;
         case 0xD: ;// DRW Vx, Vy, n -- display sprite at mem loc I -- I+n in (V_x,V_y)
             // 0xDxyn
+            NC_DBG("Draw");
             size_t x = second(op);
             size_t y = third(op);
             if (x>=sizeof(chip.reg) || y>=sizeof(chip.reg)) { 
@@ -152,16 +186,30 @@ void decode(op_t op) {
             }
             byte x_coord = chip.reg[x];
             byte y_coord = chip.reg[y];
-            chip.reg[0xF-1] = 0; // set register F (index F-1) to 0
+            chip.reg[0xF] = 0; // set register F (index F-1) to 0
             display(x_coord%DISP_WIDTH, y_coord%DISP_HEIGHT, n);
             break;
     }
 }
 
+
 void run() {
+    initscr();
     while (1) {
+        
+        ncurses_display_dsp();
+        ncurses_display_mem();
+        ncurses_display_pc();
+
         op_t op = fetch_instruction();
+        mvprintw(DISP_HEIGHT,0,"decoding: %04x", op);
         decode(op);
+
+        sleep(1);
+//        while (getch()!='n') {}
+
+        refresh();
+        move(DISP_HEIGHT+1, 0); clrtoeol(); // clear the debug message
     }
 }
 
@@ -175,8 +223,7 @@ int main () {
         exit(EXIT_FAILURE);
     }
     fread(&chip.memory[0x200], 1, sizeof(chip.memory)-0x200, fp); //  load data from 0x200 which is standard
-    //run();
-    disp_test_pattern();
-    print_display();
+    run();
+    //disp_test_pattern();
     fclose(fp);
 }
