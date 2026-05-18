@@ -16,10 +16,30 @@
 #define STACK_SIZE 16
 #define DISP_WIDTH 64
 #define DISP_HEIGHT 32
+#define FONT_SIZE   0x80 
 
 #define NC_DBG(text) mvprintw(DISP_HEIGHT+1,0,"Debug: " #text);
 
 #define TODO(text) assert(!"TODO: " #text)
+
+const unsigned char fontset[FONT_SIZE] = {
+	0xF0, 0x90, 0x90, 0x90, 0xF0,		// 0
+	0x20, 0x60, 0x20, 0x20, 0x70,		// 1
+	0xF0, 0x10, 0xF0, 0x80, 0xF0,		// 2
+	0xF0, 0x10, 0xF0, 0x10, 0xF0,		// 3
+	0x90, 0x90, 0xF0, 0x10, 0x10,		// 4
+	0xF0, 0x80, 0xF0, 0x10, 0xF0,		// 5
+	0xF0, 0x80, 0xF0, 0x90, 0xF0,		// 6
+	0xF0, 0x10, 0x20, 0x40, 0x40,		// 7
+	0xF0, 0x90, 0xF0, 0x90, 0xF0,		// 8
+	0xF0, 0x90, 0xF0, 0x10, 0xF0,		// 9
+	0xF0, 0x90, 0xF0, 0x90, 0x90,		// A
+	0xE0, 0x90, 0xE0, 0x90, 0xE0,		// B
+	0xF0, 0x80, 0x80, 0x80, 0xF0,		// C
+	0xE0, 0x90, 0x90, 0x90, 0xE0,		// D
+	0xF0, 0x80, 0xF0, 0x80, 0xF0,		// E
+	0xF0, 0x80, 0xF0, 0x80, 0x80		// F
+};
 
 typedef uint8_t  byte;
 
@@ -57,6 +77,7 @@ typedef struct {
     byte     dtimer;  // delay timer
     byte     stimer;  // sound timer that beeps as long as it is greater than 0
     byte     reg[16]; 
+    int      cur_key;
 } Chip_state;
 Chip_state chip = {0};
 
@@ -88,6 +109,12 @@ void ncurses_display_pc() {
     mvprintw(DISP_HEIGHT+3, 0, "pc: %hu\t instruction: %04x", chip.pc, instruction);
 }
 
+void ncurses_display_keypress() {
+    move(DISP_HEIGHT+4, 0); clrtoeol();
+    mvprintw(DISP_HEIGHT+4, 0, "current key: %01x", chip.cur_key!=-1 ? chip.cur_key : 9);
+    //if (chip.cur_key
+}
+
 void set_test_pattern() {
     for (int y=0; y<DISP_HEIGHT ; y++){
         for (int x=0; x<DISP_WIDTH; x++){
@@ -105,6 +132,7 @@ void init_chip() {
     load_font_set();
     stack_init(&chip.stack);
     chip.pc = 0x200;
+    chip.cur_key = -1;
 }
 
 typedef uint16_t op_t; // each instruction is two bytes 0xNNNN
@@ -149,9 +177,47 @@ void display(byte x_coord, byte y_coord, size_t n) {
 }
 
 bool key_press(byte key_value) {
-    TODO("Key press Not implemented");
+    return chip.cur_key == key_value;
 }
 
+int map_key_press(int kb_key) {
+    switch (kb_key) {
+        case '1':
+            return 1;
+        case '2':
+            return 2;
+        case '3':
+            return 3;
+        case '4':
+            return 0xC;
+        case 'q':
+            return 4;
+        case 'w':
+            return 5;
+        case 'e':
+            return 6;
+        case 'r':
+            return 0xD;
+        case 'a':
+            return 7;
+        case 's':
+            return 8;
+        case 'd':
+            return 9;
+        case 'f':
+            return 0xE;
+        case 'z':
+            return 0xA;
+        case 'x':
+            return 0;
+        case 'c':
+            return 0xB;
+        case 'v':
+            return 0xF;
+        default:
+            return -1;
+    }
+}
 byte get_key_press() {
     TODO("Get Key Press Not implemented");
 }
@@ -321,7 +387,11 @@ DecodeErr decode(op_t op) {
                     break;
                 case 0x0A:
                     NC_DBG("Wait for keypress");
-                    chip.reg[x] = get_key_press();
+                    if (chip.cur_key==-1) {
+                        chip.pc -= 2; // rewind the execution
+                    } else {
+                        chip.reg[x] = chip.cur_key;
+                    }
                     break;
                 case 0x15:
                     NC_DBG("Set dtimer to Vx");
@@ -337,7 +407,7 @@ DecodeErr decode(op_t op) {
                     break;
                 case 0x29:
                     NC_DBG("Load sprite for number");
-                    TODO("Load Sprite # Not implemented");
+                    chip.I = vx * 5; // each font char is 5 bytes, starting at mem loc 0 
                     break;
                 case 0x33:
                     NC_DBG("Load BCD rep");
@@ -373,33 +443,47 @@ void run() {
     cbreak();
     noecho();
     initscr();
+    keypad(stdscr, TRUE);
+    timeout(15);
 
     while (1) {
+        int key = getch();
+        if (key!=ERR) {
+            chip.cur_key = map_key_press(key);
+        } else {
+            chip.cur_key = -1;
+        }
+        //chip.cur_key = 
         
         ncurses_display_dsp();
         ncurses_display_mem();
         ncurses_display_pc();
+        ncurses_display_keypress();
 
         op_t op = fetch_instruction();
         mvprintw(DISP_HEIGHT,0,"decoding: %04x", op);
         decode(op);
 
-        usleep(200);
+     //   usleep(200);
         //while (getch()!='n') {}
 
-        chip.dtimer--;
-        chip.stimer--;
+        if (chip.dtimer > 0) { chip.dtimer--; }
+        if (chip.stimer>0)   { chip.stimer--; } 
 
         refresh();
         move(DISP_HEIGHT+1, 0); clrtoeol(); // clear the debug message
     }
 }
 
-int main () {
+int main (int argc, char **argv) {
+    if (argc!=2){
+        printf("Usage: %s <rom file>\n", argv[0]);
+        exit(1);
+    }
     init_chip();
 
     FILE *fp;
-    fp = fopen("trip.ch8", "rb");
+    fp = fopen(argv[1], "rb");
     if (!fp) {
         perror("Chip 8 Error: Failed to open data file");
         exit(EXIT_FAILURE);
