@@ -17,6 +17,7 @@
 #define DISP_WIDTH 64
 #define DISP_HEIGHT 32
 #define FONT_SIZE   0x80 
+#define KEY_HOLD_DELAY_MS 50
 
 #define NC_DBG(text) mvprintw(DISP_HEIGHT+1,0,"Debug: " #text);
 
@@ -78,6 +79,7 @@ typedef struct {
     byte     stimer;  // sound timer that beeps as long as it is greater than 0
     byte     reg[16]; 
     int      cur_key;
+    time_t   last_kp_time; 
 } Chip_state;
 Chip_state chip = {0};
 
@@ -123,7 +125,7 @@ void set_test_pattern() {
     }
 }
 void load_font_set() {
-    //TODO: load the font data into 0x000-0x080 from some file
+    memcpy(chip.memory, fontset, sizeof(fontset));
     return;
 }
 
@@ -161,17 +163,21 @@ void clear_disp() {
 
 void display(byte x_coord, byte y_coord, size_t n) {
     for (int y_off=0; y_off<n; y_off++) {
+        int dy = y_coord + y_off;
+        if (dy>=DISP_HEIGHT) break;
         byte sprite_slice = chip.memory[chip.I + y_off];
         for (int x_off = 0; x_off < 8; x_off++ ){
+            int dx = x_coord + x_off;
+            if (dx>=DISP_WIDTH) break;
+
             int current_bit = (sprite_slice>>(7-x_off)) & 0x1;
-            int dsp_bit     = chip.disp[y_coord+y_off][x_coord+x_off];
 
             if (!current_bit) { continue; } // 0 bit doesn't change anything 
 
-            if (dsp_bit) { // 1 ^ 1 = 0 , so this dsp bit turns off hence set flag
+            if (chip.disp[dy][dx]) { // 1 ^ 1 = 0 , so this dsp bit turns off hence set flag
                 chip.reg[0xF] = 1;
             }
-            chip.disp[y_coord+y_off][x_coord+x_off]^=current_bit;
+            chip.disp[dy][dx]^=current_bit;
         } 
     }
 }
@@ -179,6 +185,10 @@ void display(byte x_coord, byte y_coord, size_t n) {
 bool key_press(byte key_value) {
     return chip.cur_key == key_value;
 }
+
+// void set_keypress(int key_value) {
+//     time_t now = time(NULL);
+// }
 
 int map_key_press(int kb_key) {
     switch (kb_key) {
@@ -218,9 +228,7 @@ int map_key_press(int kb_key) {
             return -1;
     }
 }
-byte get_key_press() {
-    TODO("Get Key Press Not implemented");
-}
+
 
 typedef enum {
     SUCCESS=1,
@@ -411,7 +419,10 @@ DecodeErr decode(op_t op) {
                     break;
                 case 0x33:
                     NC_DBG("Load BCD rep");
-                    TODO("Load BCD rep Not implemented");
+                    // Vx is max 255
+                    chip.memory[chip.I] = vx / 100;
+                    chip.memory[chip.I+1] = (vx/10) % 10;
+                    chip.memory[chip.I+2] = vx % 10;
                     break;
                 case 0x55:
                     NC_DBG("Store reg 0-Vx in Mem[I]-Mem[I+x]");
@@ -472,6 +483,7 @@ void run() {
 
         refresh();
         move(DISP_HEIGHT+1, 0); clrtoeol(); // clear the debug message
+        usleep(1000);
     }
 }
 
